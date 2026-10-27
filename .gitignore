@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .habl/
+*.egg-info/
+build/
+dist/
