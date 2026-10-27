@@ -28,12 +28,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Constants -- the seven values from the du'as
 # ---------------------------------------------------------------------------
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 HABL_SCHEMA_VERSION = "0.1.0"
 

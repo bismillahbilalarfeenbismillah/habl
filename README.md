@@ -52,17 +52,36 @@ finding = Finding(
     location=Location(file="app.py", line=42, function="process")
 )
 
-# Append to the ledger
-append_finding(finding)
+# Append to the ledger (project_root is the directory that holds .habl/)
+append_finding(finding, ".")
 
 # Query
-for f in read_ledger():
+for f in read_ledger("."):
     print(f.summary)
 ```
 
+## Command line (v0.1.1)
+
+```bash
+habl stats                                   # counts + ledger health
+habl query --min-severity high               # filter findings
+habl query --source fatima --format jsonl    # machine-readable
+habl correlate                               # groups by declared correlation_id
+habl correlate --infer-location              # + cross-tool file/line overlap
+```
+
+All commands take `--root DIR` (default `.`) and `--strict`.
+
+- **Nothing is silently dropped.** Malformed ledger lines are listed on stderr with line numbers. `--strict` turns them into exit code 1. Usage errors exit 2.
+- **Declared and inferred links stay distinct.** A shared `correlation_id` is a link a tool *declared*. Location overlap is a link `correlate` *inferred*, and it is labelled that way. Inference only covers findings from two or more different tools, and it never writes back to the ledger.
+- **A group is not a verdict.** Correlation marks findings for joint inspection. Each finding remains attributable to the tool that emitted it.
+- **Output is deterministic** for a given ledger and arguments. `query` preserves ledger (append) order. `stats` keys are sorted.
+
+`python -m habl ...` works as well.
+
 ## Schema version
 
-Current: `0.1.0`
+Current: `0.1.0` (package `0.1.1`; v0.1.1 adds read-side tooling only, no schema change)
 
 ## License
 
