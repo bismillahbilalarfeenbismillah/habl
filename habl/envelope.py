@@ -79,6 +79,38 @@ class Category(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# Integrity errors -- typed, so callers never have to parse messages
+# ---------------------------------------------------------------------------
+
+class LedgerIntegrityError(ValueError):
+    """The ledger cannot answer a question without silently choosing.
+
+    Subclasses ValueError so existing `except ValueError` handlers keep
+    working.
+    """
+
+
+class ProvenanceCycleError(LedgerIntegrityError):
+    """A parent_id chain revisits a finding it has already passed."""
+
+    def __init__(self, cycle: list[str]) -> None:
+        self.cycle = cycle
+        super().__init__("provenance cycle: " + " -> ".join(cycle))
+
+
+class DuplicateFindingIdError(LedgerIntegrityError):
+    """A finding_id needed for an answer appears on more than one line."""
+
+    def __init__(self, finding_id: str, count: int) -> None:
+        self.finding_id = finding_id
+        self.count = count
+        super().__init__(
+            f"finding_id {finding_id!r} appears {count} times in the ledger; "
+            "provenance through it is ambiguous"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Location -- where in the artifact the finding lives
 # ---------------------------------------------------------------------------
 
@@ -298,15 +330,35 @@ def read_provenance_chain(
     Given a finding, return the chain of parent findings that
     caused it -- the retrograde signal path from postsynaptic
     back to presynaptic. Returns oldest-first (root cause first).
+
+    Returns [] if finding_id is not in the ledger. If the oldest
+    finding reached names a parent_id that is not in this ledger,
+    the chain stops there; habl stats reports such dangling parents.
+
+    Raises:
+        DuplicateFindingIdError -- an id on the walk appears on more
+            than one ledger line, so which parent is meant is ambiguous.
+        ProvenanceCycleError -- the walk revisits an id (self-parent or
+            longer loop). The walk is bounded by the ledger size either
+            way; it never loops indefinitely.
     """
-    all_findings = {f.finding_id: f for f in read_ledger(project_root)}
+    by_id: dict[str, list[Finding]] = {}
+    for f in read_ledger(project_root):
+        by_id.setdefault(f.finding_id, []).append(f)
+
     chain: list[Finding] = []
+    seen: list[str] = []
     current_id: str | None = finding_id
 
-    while current_id and current_id in all_findings:
-        finding = all_findings[current_id]
-        chain.append(finding)
-        current_id = finding.parent_id
+    while current_id and current_id in by_id:
+        if current_id in seen:
+            raise ProvenanceCycleError([*seen[seen.index(current_id):], current_id])
+        matches = by_id[current_id]
+        if len(matches) > 1:
+            raise DuplicateFindingIdError(current_id, len(matches))
+        seen.append(current_id)
+        chain.append(matches[0])
+        current_id = matches[0].parent_id
 
     chain.reverse()  # root cause first
     return chain
