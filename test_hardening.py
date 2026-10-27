@@ -270,6 +270,54 @@ def test_f7_payload_key_order_does_not_change_bytes():
     assert Finding.from_json(a.to_json()).to_json() == a.to_json()
 
 
+# --- F9 (GPT-6 re-audit): strict JSON in and out ---------------------------
+
+def test_f9_non_finite_numbers_refused():
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        _expect(ValueError, lambda v: Finding("habl", "advisory", "binding", "t",
+                                              Location(), payload={"s": v}), bad)
+        _expect(ValueError, lambda v: Finding("habl", "advisory", "binding", "t",
+                                              Location(), payload={"a": [{"b": v}]}), bad)
+
+
+def test_f9_nan_mutated_in_after_construction_not_written():
+    with tempfile.TemporaryDirectory() as r:
+        f = _f("a")
+        f.payload["score"] = float("nan")
+        _expect(ValueError, append_finding, f, r)
+        assert not ledger_path(r).exists() or ledger_path(r).read_bytes() == b""
+
+
+def test_f9_values_json_would_silently_change_are_refused():
+    for payload in ({1: "a"}, {"t": (1, 2)}, {"s": {1}}, {"o": object()}):
+        _expect(TypeError, lambda p: Finding("habl", "advisory", "binding", "t",
+                                             Location(), payload=p), payload)
+
+
+def test_f9_strict_payload_round_trips_exactly():
+    p = {"n": None, "b": True, "i": -3, "f": 1.5, "s": "x", "l": [1, [2, {"k": "v"}]]}
+    f = Finding("habl", "advisory", "binding", "t", Location(), payload=p)
+    assert Finding.from_json(f.to_json()).payload == p
+
+
+def test_f9_reader_rejects_nan_constant_and_duplicate_keys():
+    good = _f("a").to_json()
+    nan_line = good.replace('"payload":{}', '"payload":{"s":NaN}')
+    dup_line = good.replace('"summary":"s"', '"summary":"first","summary":"second"')
+    assert nan_line != good and dup_line != good
+    for line, word in ((nan_line, "NaN"), (dup_line, "duplicate key 'summary'")):
+        with tempfile.TemporaryDirectory() as r:
+            path = ledger_path(r)
+            path.parent.mkdir(parents=True)
+            path.write_text(good + "\n" + line + "\n", encoding="utf-8")
+            exc = _expect(LedgerParseError, read_ledger, r)
+            assert exc.line_no == 2 and "invalid JSON" in exc.reason and word in exc.reason
+            from habl.query import load_ledger
+            load = load_ledger(r)
+            assert len(load.entries) == 1 and load.malformed[0].line_no == 2
+            assert word in load.malformed[0].reason
+
+
 if __name__ == "__main__":
     tests = [(n, fn) for n, fn in sorted(globals().items())
              if n.startswith("test_") and callable(fn)]

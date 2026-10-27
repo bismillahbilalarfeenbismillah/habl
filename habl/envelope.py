@@ -138,6 +138,70 @@ class SchemaVersionError(ValueError):
 
 
 # ---------------------------------------------------------------------------
+# Strict JSON -- what one tool writes, any standard parser reads the same
+# ---------------------------------------------------------------------------
+
+def _check_json_value(value: Any, where: str) -> None:
+    """Require a strict-JSON value: str keys, finite numbers, list not tuple.
+
+    Anything that json.dumps would silently convert (int keys, tuples)
+    or emit as non-standard JSON (NaN, Infinity) is rejected, so a
+    finding reads back equal to what was written, in any language.
+    """
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, int):
+        return
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            msg = f"{where}: non-finite number {value!r} is not valid JSON"
+            raise ValueError(msg)
+        return
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            _check_json_value(item, f"{where}[{i}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                msg = f"{where}: key {key!r} must be str, got {type(key).__name__}"
+                raise TypeError(msg)
+            _check_json_value(item, f"{where}.{key}")
+        return
+    msg = f"{where}: {type(value).__name__} is not a JSON type"
+    raise TypeError(msg)
+
+
+class StrictJSONError(ValueError):
+    """A line is syntactically JSON but not strict JSON (NaN/Infinity
+    constant, or the same key twice in one object)."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            msg = f"duplicate key {key!r}"
+            raise StrictJSONError(msg)
+        out[key] = value
+    return out
+
+
+def _reject_constant(name: str) -> Any:
+    msg = f"non-standard constant {name}"
+    raise StrictJSONError(msg)
+
+
+def strict_loads(line: str) -> Any:
+    """json.loads that rejects NaN/Infinity and duplicate object keys."""
+    return json.loads(
+        line,
+        object_pairs_hook=_reject_duplicate_keys,
+        parse_constant=_reject_constant,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Location -- where in the artifact the finding lives
 # ---------------------------------------------------------------------------
 
@@ -258,6 +322,7 @@ class Finding:
         if not isinstance(self.payload, dict):
             msg = f"payload must be a dict, got {type(self.payload).__name__}"
             raise TypeError(msg)
+        _check_json_value(self.payload, "payload")
         if self.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             msg = (
                 f"schema_version {self.schema_version!r} not supported by this "
@@ -287,11 +352,14 @@ class Finding:
 
         Keys are sorted at every level and output is ASCII, so equal
         findings give equal bytes regardless of dict insertion order.
-        This is stable serialization, not a full canonical form: number
-        formatting and Unicode normalization rules for the v0.2 hash
-        chain are still to be specified.
+        Non-finite numbers are refused (allow_nan=False). This is stable
+        serialization, not a full canonical form: number formatting and
+        Unicode normalization rules for the v0.2 hash chain are still to
+        be specified.
         """
-        return json.dumps(self.to_dict(), separators=(",", ":"), sort_keys=True)
+        return json.dumps(
+            self.to_dict(), separators=(",", ":"), sort_keys=True, allow_nan=False
+        )
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Finding:
@@ -312,8 +380,12 @@ class Finding:
 
     @classmethod
     def from_json(cls, line: str) -> Finding:
-        """Deserialize from a single JSON line."""
-        return cls.from_dict(json.loads(line))
+        """Deserialize from a single JSON line.
+
+        Strict: NaN/Infinity constants and duplicate object keys are
+        rejected rather than read as whichever value came last.
+        """
+        return cls.from_dict(strict_loads(line))
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +505,8 @@ def read_ledger(project_root: str | Path) -> list[Finding]:
                 findings.append(Finding.from_json(line))
             except json.JSONDecodeError as exc:
                 raise LedgerParseError(path, line_no, f"invalid JSON: {exc.msg}") from exc
+            except StrictJSONError as exc:
+                raise LedgerParseError(path, line_no, f"invalid JSON: {exc}") from exc
             except (TypeError, ValueError) as exc:
                 raise LedgerParseError(path, line_no, f"invalid finding: {exc}") from exc
     return findings

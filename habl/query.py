@@ -36,7 +36,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from habl.envelope import Category, Finding, Severity, _locked, ledger_path
+from habl.envelope import (
+    Category,
+    Finding,
+    Severity,
+    StrictJSONError,
+    _locked,
+    ledger_path,
+    strict_loads,
+)
 
 # Ordering used by --min-severity and by sorted output.
 SEVERITY_RANK: dict[Severity, int] = {
@@ -100,11 +108,14 @@ def load_ledger(project_root: str | Path) -> LedgerLoad:
             if not line:
                 continue
             try:
-                data = json.loads(line)
+                data = strict_loads(line)
             except json.JSONDecodeError as exc:
                 load.malformed.append(
                     MalformedLine(line_no, f"invalid JSON: {exc.msg}", line[:200])
                 )
+                continue
+            except StrictJSONError as exc:
+                load.malformed.append(MalformedLine(line_no, f"invalid JSON: {exc}", line[:200]))
                 continue
             if not isinstance(data, dict):
                 load.malformed.append(
