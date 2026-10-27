@@ -20,10 +20,14 @@ from habl import (
     Finding,
     LedgerIntegrityError,
     Location,
+    LedgerParseError,
     ProvenanceCycleError,
+    SchemaVersionError,
     Severity,
     append_finding,
     append_findings,
+    ledger_path,
+    read_ledger,
     read_provenance_chain,
 )
 
@@ -109,6 +113,91 @@ def test_f2_f3_normal_chain_and_dangling_unchanged():
         append_findings([_f("a", "elsewhere"), _f("b", "a"), _f("c", "b")], r)
         assert [f.finding_id for f in read_provenance_chain("c", r)] == ["a", "b", "c"]
         assert read_provenance_chain("missing", r) == []
+
+
+# --- F1: deserialization does not mutate input -----------------------------
+
+def test_f1_from_dict_leaves_input_intact():
+    d = {"source_tool": "habl", "severity": "advisory", "category": "binding",
+         "summary": "t", "location": {"file": "x.py", "line": 3}}
+    snapshot = repr(d)
+    f = Finding.from_dict(d)
+    assert repr(d) == snapshot
+    assert f.location.line == 3
+    # Parsing the same dict twice gives the same location both times.
+    assert Finding.from_dict(d).location == f.location
+
+
+def test_f1_non_object_location_rejected():
+    d = {"source_tool": "habl", "severity": "advisory", "category": "binding",
+         "summary": "t", "location": "x.py:3"}
+    _expect(TypeError, Finding.from_dict, d)
+
+
+# --- F4: fail-stop read names the line -------------------------------------
+
+def test_f4_truncated_final_record_names_line():
+    with tempfile.TemporaryDirectory() as r:
+        append_findings([_f("a"), _f("b")], r)
+        with open(ledger_path(r), "a", encoding="utf-8") as fh:
+            fh.write('{"source_tool":')
+        exc = _expect(LedgerParseError, read_ledger, r)
+        assert exc.line_no == 3 and "invalid JSON" in exc.reason
+        assert isinstance(exc, ValueError)  # old `except ValueError` still catches
+
+
+def test_f4_bad_field_type_names_line():
+    with tempfile.TemporaryDirectory() as r:
+        append_finding(_f("a"), r)
+        with open(ledger_path(r), "a", encoding="utf-8") as fh:
+            fh.write('{"source_tool":"habl","severity":"advisory","category":"binding",'
+                     '"summary":"t","location":{"line":"7"}}\n')
+        exc = _expect(LedgerParseError, read_ledger, r)
+        assert exc.line_no == 2 and "Location.line must be int" in exc.reason
+
+
+def test_f4_bom_reported_not_silently_stripped():
+    with tempfile.TemporaryDirectory() as r:
+        path = ledger_path(r)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\xef\xbb\xbf" + _f("a").to_json().encode() + b"\n")
+        exc = _expect(LedgerParseError, read_ledger, r)
+        assert exc.line_no == 1
+
+
+def test_f4_crlf_lines_read_normally():
+    with tempfile.TemporaryDirectory() as r:
+        path = ledger_path(r)
+        path.parent.mkdir(parents=True)
+        path.write_bytes((_f("a").to_json() + "\r\n" + _f("b").to_json() + "\r\n").encode())
+        assert [f.finding_id for f in read_ledger(r)] == ["a", "b"]
+
+
+# --- F5: schema version, timestamp, field types ----------------------------
+
+def test_f5_unsupported_schema_version_rejected():
+    exc = _expect(SchemaVersionError, Finding, "habl", "advisory", "binding", "t",
+                  Location(), "id1", "99.0.0")
+    assert "99.0.0" in str(exc)
+
+
+def test_f5_timestamp_must_be_iso_with_offset():
+    for bad in ("not-a-time", "2026-10-27T10:00:00", "", "27/10/2026"):
+        _expect(ValueError, lambda ts: Finding("habl", "advisory", "binding", "t",
+                                               Location(), timestamp=ts), bad)
+    ok = Finding("habl", "advisory", "binding", "t", Location(),
+                 timestamp="2026-10-27T10:00:00Z")
+    assert ok.timestamp.endswith("Z")  # stored as given, not rewritten
+
+
+def test_f5_field_types_checked():
+    _expect(TypeError, lambda: Finding("habl", "advisory", "binding", 5, Location()))
+    _expect(TypeError, lambda: Finding("habl", "advisory", "binding", "t", Location(),
+                                       parent_id=7))
+    _expect(TypeError, lambda: Finding("habl", "advisory", "binding", "t", Location(),
+                                       payload=[1]))
+    _expect(TypeError, lambda: Location(line=True))
+    _expect(TypeError, lambda: Location(file=3))
 
 
 if __name__ == "__main__":

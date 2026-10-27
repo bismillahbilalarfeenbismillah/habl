@@ -151,15 +151,20 @@ def test_naive_time_filter_rejected():
             raise AssertionError("naive timestamp accepted")
 
 
-def test_unparseable_finding_timestamp_excluded_from_time_filter_only():
+def test_unparseable_timestamp_reported_as_malformed():
+    """Since F5, a bad timestamp is rejected at parse time and reported,
+    rather than sitting in the ledger and quietly failing time filters."""
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        append_findings([Finding(source_tool="habl", severity="advisory", category="binding",
-                                 summary="bad ts", location=Location(), timestamp="yesterday")],
-                        root)
-        entries = load_ledger(root).entries
-        assert len(filter_findings(entries)) == 1
-        assert filter_findings(entries, since="2000-01-01T00:00:00Z") == []
+        _seed(root)
+        with open(ledger_path(root), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"source_tool": "habl", "severity": "advisory",
+                                 "category": "binding", "summary": "bad ts",
+                                 "location": {}, "timestamp": "yesterday"}) + "\n")
+        load = load_ledger(root)
+        assert len(load.entries) == 5
+        assert [m.line_no for m in load.malformed] == [6]
+        assert "not ISO-8601" in load.malformed[0].reason
 
 
 # --- library: stats --------------------------------------------------------
@@ -226,11 +231,13 @@ def test_correlate_min_sources_and_non_int_lines():
         root = Path(d)
         _seed(root)
         with open(ledger_path(root), "a", encoding="utf-8") as fh:
-            # Envelope does not type-check line; correlate must not crash.
+            # Since F5 the envelope type-checks line: reported, not grouped.
             fh.write(json.dumps({"source_tool": "habl", "severity": "advisory",
                                  "category": "binding", "summary": "str line",
                                  "location": {"file": "app.py", "line": "10"}}) + "\n")
-        entries = load_ledger(root).entries
+        load = load_ledger(root)
+        assert "Location.line must be int" in load.malformed[0].reason
+        entries = load.entries
         assert correlate(entries, min_sources=3) == []
         groups = correlate(entries, infer_location=True, min_sources=3)
         assert [g.key for g in groups] == ["app.py:8-12"]
