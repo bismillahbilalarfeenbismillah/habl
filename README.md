@@ -79,6 +79,26 @@ All commands take `--root DIR` (default `.`) and `--strict`.
 
 `python -m habl ...` works as well.
 
+## Known limits in v0.1.1
+
+These are deliberate, documented behaviours, not hidden ones:
+
+- **Missing parents give partial chains.** If a `parent_id` names a finding that is not in the ledger, `read_provenance_chain` returns the chain up to that point and stops. It does not raise. `habl stats` lists every such reference under `health.dangling_parents`.
+- **Duplicate `finding_id`s are detected, not refused.** Append accepts a repeated id. It is caught when a provenance walk reaches it (`DuplicateFindingIdError`) and is listed by `habl stats` under `health.duplicate_ids`.
+- **Unknown fields are rejected.** A ledger line with a field this version does not know is reported as malformed, not partly read.
+- **Locking is POSIX-only and cooperative.** `flock` keeps HABL writers from interleaving on Linux and macOS. It does not stop a writer that bypasses HABL, does not make a multi-line batch crash-atomic, and does nothing on Windows.
+- **Bytes are stable, not canonical.** Keys are sorted and output is compact strict JSON (no NaN or Infinity, no duplicate keys), but there is no full canonical form yet.
+
+## Planned for v0.2
+
+Design work, not yet decided:
+
+1. Canonical serialization (for example RFC 8785 JCS) as the input to a hash chain
+2. Stronger writer coordination: crash recovery and a Windows implementation
+3. Forward compatibility for unknown fields, tied to schema-version rules
+4. Duplicate prevention at append time
+5. Whether a missing parent should fail closed in provenance-sensitive uses
+
 ## Schema version
 
 Current: `0.1.0` (package `0.1.1`; v0.1.1 adds read-side tooling only, no schema change)
