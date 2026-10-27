@@ -7,9 +7,15 @@ The mycorrhizal connective tissue of the Bayyinah structural-honesty stack.
 
 from habl.envelope import (
     Category,
+    DuplicateFindingIdError,
     Finding,
+    LedgerIntegrityError,
+    LedgerParseError,
     Location,
+    ProvenanceCycleError,
+    SchemaVersionError,
     Severity,
+    StrictJSONError,
     __version__,
     append_finding,
     append_findings,
@@ -23,9 +29,15 @@ from habl.envelope import (
 
 __all__ = [
     "Category",
+    "DuplicateFindingIdError",
     "Finding",
+    "LedgerIntegrityError",
+    "LedgerParseError",
     "Location",
+    "ProvenanceCycleError",
+    "SchemaVersionError",
     "Severity",
+    "StrictJSONError",
     "__version__",
     "append_finding",
     "append_findings",

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "habl"
-version = "0.1.0"
+version = "0.1.1"
 description = "Honesty-Attested Binding Ledger -- the mycorrhizal connective tissue of the Bayyinah structural-honesty stack"
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,9 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Software Development :: Testing",
 ]
+
+[project.scripts]
+habl = "habl.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/bismillahbilalarfeenbismillah/habl"
