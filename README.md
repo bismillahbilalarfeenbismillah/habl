@@ -10,10 +10,10 @@ HABL is the shared finding protocol for the **Entourage Effect Software Safety S
 
 Every tool in the suite emits **findings** -- structured envelopes that record what was checked, what was found, and where. HABL defines:
 
-- **The Finding envelope** -- a frozen dataclass with source_tool, severity, category, location, summary, and correlation/provenance fields
-- **The append-only ledger** -- `.habl/findings.jsonl`, one JSON object per line, append-only by contract
+- **The Finding envelope** -- a validated dataclass with source_tool, severity, category, location, summary, and correlation/provenance fields (`Location` is frozen; `Finding` is not)
+- **The append-only ledger** -- `.habl/findings.jsonl`, one JSON object per line, append-only by contract. Appends are locked (POSIX `flock`) so concurrent writers using HABL do not interleave. v0.1 is not tamper-evident: nothing yet detects an edit made outside HABL. A hash chain is planned for v0.2.
 - **Correlation and provenance** -- `correlation_id` groups related findings across tools; `parent_id` chains cause-and-effect
-- **Query helpers** -- read by source, by correlation, or walk the full provenance chain
+- **Query helpers** -- read by source, by correlation, or walk the full provenance chain. A walk that meets a cycle or a duplicated `finding_id` raises a typed `LedgerIntegrityError` instead of looping or silently picking one.
 
 ## The Entourage Effect
 

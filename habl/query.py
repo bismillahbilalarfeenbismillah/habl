@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from habl.envelope import Category, Finding, Severity, ledger_path
+from habl.envelope import Category, Finding, Severity, _locked, ledger_path
 
 # Ordering used by --min-severity and by sorted output.
 SEVERITY_RANK: dict[Severity, int] = {
@@ -94,7 +94,7 @@ def load_ledger(project_root: str | Path) -> LedgerLoad:
     if not load.exists:
         return load
 
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh, _locked(fh, exclusive=False):
         for line_no, raw_line in enumerate(fh, start=1):
             line = raw_line.strip()
             if not line:

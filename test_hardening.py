@@ -19,8 +19,8 @@ from habl import (
     DuplicateFindingIdError,
     Finding,
     LedgerIntegrityError,
-    Location,
     LedgerParseError,
+    Location,
     ProvenanceCycleError,
     SchemaVersionError,
     Severity,
@@ -198,6 +198,76 @@ def test_f5_field_types_checked():
                                        payload=[1]))
     _expect(TypeError, lambda: Location(line=True))
     _expect(TypeError, lambda: Location(file=3))
+
+
+def test_f5_mutation_after_construction_caught_at_append():
+    with tempfile.TemporaryDirectory() as r:
+        append_finding(_f("a"), r)
+        before = ledger_path(r).read_bytes()
+        for field_name, value in (("timestamp", "not-a-time"), ("schema_version", "99.0.0"),
+                                  ("severity", "loud"), ("source_tool", "evil")):
+            bad = _f("b")
+            setattr(bad, field_name, value)
+            try:
+                append_findings([_f("c"), bad], r)
+            except (TypeError, ValueError):
+                pass
+            else:
+                raise AssertionError(f"mutated {field_name} was written")
+        assert ledger_path(r).read_bytes() == before
+
+
+# --- F6: concurrent batch appends do not interleave ------------------------
+
+def test_f6_concurrent_batches_stay_whole():
+    code = textwrap.dedent("""
+        import sys, tempfile, json, multiprocessing as mp
+        sys.path.insert(0, sys.argv[1])
+        from habl import Finding, Location, append_findings, ledger_path
+        def w(root, tag):
+            for i in range(15):
+                append_findings([Finding(source_tool="habl", severity="advisory",
+                    category="binding", summary=f"{tag}{i}.{j}", location=Location(),
+                    payload={"pad": "x" * 1500}) for j in range(20)], root)
+        if __name__ == "__main__":
+            with tempfile.TemporaryDirectory() as root:
+                ps = [mp.Process(target=w, args=(root, t)) for t in "ABCDEF"]
+                [p.start() for p in ps]; [p.join() for p in ps]
+                lines = open(ledger_path(root), encoding="utf-8").read().splitlines()
+                bad = sum(1 for ln in lines if not ln.startswith("{") or not ln.endswith("}"))
+                for ln in lines: json.loads(ln)
+                print(len(lines), bad)
+    """)
+    with tempfile.TemporaryDirectory() as d:
+        script = Path(d) / "stress.py"
+        script.write_text(code)
+        proc = subprocess.run([sys.executable, "-I", str(script), str(REPO)],
+                              capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert proc.stdout.split() == ["1800", "0"]
+
+
+def test_f6_failed_serialization_leaves_ledger_unchanged():
+    class Unserializable:
+        pass
+    with tempfile.TemporaryDirectory() as r:
+        append_finding(_f("a"), r)
+        before = ledger_path(r).read_bytes()
+        bad = _f("b")
+        bad.payload = {"obj": Unserializable()}
+        _expect(TypeError, append_findings, [_f("c"), bad], r)
+        assert ledger_path(r).read_bytes() == before
+
+
+# --- F7: equal findings give equal bytes -----------------------------------
+
+def test_f7_payload_key_order_does_not_change_bytes():
+    a, b = _f("o"), _f("o")
+    a.timestamp = b.timestamp = "2026-01-01T00:00:00+00:00"
+    a.payload = {"one": 1, "two": {"y": 2, "x": 1}}
+    b.payload = {"two": {"x": 1, "y": 2}, "one": 1}
+    assert a.to_json() == b.to_json()
+    assert Finding.from_json(a.to_json()).to_json() == a.to_json()
 
 
 if __name__ == "__main__":

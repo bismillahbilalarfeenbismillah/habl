@@ -22,11 +22,17 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, Iterator
+
+try:  # POSIX advisory locking; absent on Windows
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover
+    _fcntl = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Constants -- the seven values from the du'as
@@ -223,6 +229,20 @@ class Finding:
             self.severity = Severity(self.severity)
         if isinstance(self.category, str):
             self.category = Category(self.category)
+        self.validate()
+
+    def validate(self) -> None:
+        """Check every field. Called at construction and again at append,
+        because Finding is mutable and a field may change in between."""
+        if self.source_tool not in VALID_SOURCES:
+            msg = f"source_tool {self.source_tool!r} not in VALID_SOURCES"
+            raise ValueError(msg)
+        if not isinstance(self.severity, Severity):
+            msg = f"severity must be a Severity, got {self.severity!r}"
+            raise TypeError(msg)
+        if not isinstance(self.category, Category):
+            msg = f"category must be a Category, got {self.category!r}"
+            raise TypeError(msg)
         if not isinstance(self.location, Location):
             msg = f"location must be a Location, got {type(self.location).__name__}"
             raise TypeError(msg)
@@ -263,8 +283,15 @@ class Finding:
         return d
 
     def to_json(self) -> str:
-        """Serialize to a single JSON line (for the ledger)."""
-        return json.dumps(self.to_dict(), separators=(",", ":"))
+        """Serialize to a single JSON line (for the ledger).
+
+        Keys are sorted at every level and output is ASCII, so equal
+        findings give equal bytes regardless of dict insertion order.
+        This is stable serialization, not a full canonical form: number
+        formatting and Unicode normalization rules for the v0.2 hash
+        chain are still to be specified.
+        """
+        return json.dumps(self.to_dict(), separators=(",", ":"), sort_keys=True)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Finding:
@@ -316,6 +343,47 @@ def ledger_path(project_root: str | Path) -> Path:
     return Path(project_root) / HABL_DIR / LEDGER_FILENAME
 
 
+@contextmanager
+def _locked(handle: IO[Any], exclusive: bool) -> Iterator[None]:
+    """Hold a POSIX advisory lock on an open ledger file.
+
+    Writers take LOCK_EX, readers LOCK_SH, so a reader never observes
+    half of a batch and two writers never interleave. Advisory only:
+    a process writing the file without this module is not coordinated.
+    On platforms without fcntl (Windows) this is a no-op, and
+    concurrent appends there are not coordinated.
+    """
+    if _fcntl is None:
+        yield
+        return
+    _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX if exclusive else _fcntl.LOCK_SH)
+    try:
+        yield
+    finally:
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+
+
+def _append_records(findings: list[Finding], project_root: str | Path) -> Path:
+    """Serialize first, then write all records in one locked append.
+
+    Validation and serialization happen before the file is touched, so
+    a finding that fails either leaves the ledger unchanged.
+    """
+    path = ledger_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for f in findings:
+        f.validate()
+    data = "".join(f.to_json() + "\n" for f in findings).encode("utf-8")
+    if not data:
+        return path
+    with open(path, "ab", buffering=0) as handle, _locked(handle, exclusive=True):
+        view = memoryview(data)
+        while view:
+            written = handle.write(view)
+            view = view[written:]
+    return path
+
+
 def append_finding(finding: Finding, project_root: str | Path) -> Path:
     """Append a single finding to the project's HABL ledger.
 
@@ -326,26 +394,20 @@ def append_finding(finding: Finding, project_root: str | Path) -> Path:
 
     Returns the path to the ledger file.
     """
-    path = ledger_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(finding.to_json())
-        f.write("\n")
-    return path
+    return _append_records([finding], project_root)
 
 
 def append_findings(
     findings: list[Finding],
     project_root: str | Path,
 ) -> Path:
-    """Append multiple findings to the ledger in one write."""
-    path = ledger_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        for finding in findings:
-            f.write(finding.to_json())
-            f.write("\n")
-    return path
+    """Append multiple findings to the ledger in one locked write.
+
+    Concurrent callers using this module do not interleave records
+    (POSIX). A crash mid-write can still leave a truncated final line;
+    readers report it with its line number.
+    """
+    return _append_records(list(findings), project_root)
 
 
 def read_ledger(project_root: str | Path) -> list[Finding]:
@@ -362,7 +424,7 @@ def read_ledger(project_root: str | Path) -> list[Finding]:
     if not path.exists():
         return []
     findings = []
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f, _locked(f, exclusive=False):
         for line_no, raw in enumerate(f, start=1):
             line = raw.strip()
             if not line:
